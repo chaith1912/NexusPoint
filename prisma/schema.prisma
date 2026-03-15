@@ -1,0 +1,175 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────
+// ENUM DEFINITIONS
+// ─────────────────────────────────────────────
+
+/// Tracks the lifecycle stage of a job application.
+/// Ordered loosely by progression in a typical hiring funnel.
+enum ApplicationStatus {
+  BOOKMARKED       // Saved but not yet applied
+  APPLIED          // Application submitted
+  ASSESSMENT       // Online test / coding challenge sent
+  INTERVIEW_ROUND  // Any interview stage (phone, technical, HR)
+  OFFER            // Offer received
+  REJECTED         // Rejected at any stage
+  WITHDRAWN        // Candidate withdrew their application
+  GHOSTED          // No response after reasonable follow-up
+}
+
+/// Source platform where the job was found/applied.
+/// Extensible — new platforms can be added without breaking existing data.
+enum ApplicationSource {
+  LINKEDIN
+  INTERNSHALA
+  NAUKRI
+  INDEED
+  COMPANY_WEBSITE
+  REFERRAL
+  OTHER
+}
+
+/// Resume file format — enforced at DB level to prevent garbage data.
+enum ResumeFormat {
+  PDF
+  DOCX
+  DOC
+}
+
+// ─────────────────────────────────────────────
+// MODEL: User
+// ─────────────────────────────────────────────
+
+/// Core user/candidate account.
+/// One user owns many applications and resumes.
+model User {
+  id            String    @id @default(uuid())          // UUID preferred over serial for distributed safety
+  email         String    @unique
+  passwordHash  String                                  // bcrypt hash — never store plaintext
+  fullName      String
+  profileUrl    String?                                 // LinkedIn or portfolio URL (optional)
+  isActive      Boolean   @default(true)               // Soft-delete flag
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  applications  Application[]
+  resumes       Resume[]
+
+  @@map("users")  // Explicit table name — prevents Prisma default casing surprises
+}
+
+// ─────────────────────────────────────────────
+// MODEL: Application
+// ─────────────────────────────────────────────
+
+/// Represents a single job application tracked by the candidate.
+/// Central model of the entire system — all analytics derive from here.
+model Application {
+  id                String             @id @default(uuid())
+  userId            String             // FK to User
+
+  // ── Core Job Details ──────────────────────
+  jobTitle          String
+  companyName       String
+  jobUrl            String?            // Original posting URL (may break over time — store at capture)
+  jobDescription    String?            @db.Text  // Full JD text, for AI analysis in Module 4
+  location          String?            // "Remote", "Bangalore, IN", etc.
+  salaryRange       String?            // Freeform: "₹8-12 LPA" or "$80k-$100k"
+
+  // ── Status & Source ───────────────────────
+  status            ApplicationStatus  @default(BOOKMARKED)
+  source            ApplicationSource  @default(OTHER)
+  appliedAt         DateTime?          // Null if status is BOOKMARKED (not yet applied)
+
+  // ── Follow-up & Notes ─────────────────────
+  nextFollowUpDate  DateTime?          // For reminder logic in Module 3
+  notes             String?            @db.Text  // Candidate's private notes
+  contactName       String?            // Recruiter / hiring manager name
+  contactEmail      String?            // Recruiter email if known
+
+  // ── AI Enrichment (populated by Module 4) ─
+  aiParsedKeywords  String[]           // Skills/keywords extracted by LLM
+  aiMatchScore      Float?             // Resume-to-JD match score (0.0–1.0)
+
+  // ── Resume Link ───────────────────────────
+  resumeId          String?            // Which resume version was submitted
+  resume            Resume?            @relation(fields: [resumeId], references: [id])
+
+  // ── Audit ─────────────────────────────────
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  // Relations
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  statusHistory     ApplicationStatusHistory[]
+
+  // Indexes for common query patterns
+  @@index([userId, status])      // Dashboard filter: "show me all INTERVIEW_ROUND apps"
+  @@index([userId, appliedAt])   // Timeline view: sorted by apply date
+  @@index([companyName])         // Search: "all apps to Google"
+  @@map("applications")
+}
+
+// ─────────────────────────────────────────────
+// MODEL: ApplicationStatusHistory
+// ─────────────────────────────────────────────
+
+/// Immutable audit log of every status change on an application.
+/// Enables timeline visualization (Kanban card history) in Module 3.
+/// Defensive design: never delete rows from this table.
+
+model ApplicationStatusHistory {
+  id             String             @id @default(uuid())
+  applicationId  String
+  fromStatus     ApplicationStatus?  // Null on first creation
+  toStatus       ApplicationStatus
+  changedAt      DateTime           @default(now())
+  note           String?            // Optional reason for change ("Recruiter called")
+
+  application    Application        @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@map("application_status_history")
+}
+
+// ─────────────────────────────────────────────
+// MODEL: Resume
+// ─────────────────────────────────────────────
+
+/// Stores metadata for resume versions uploaded by the candidate.
+/// Actual file bytes are stored in the filesystem or object storage (S3/local).
+/// The DB stores only the path/reference — defensive against large blob storage in Postgres.
+
+model Resume {
+  id           String        @id @default(uuid())
+  userId       String
+
+  label        String        // Human name: "Software Engineer v2 - Jan 2025"
+  filePath     String        // Relative path: "uploads/resumes/{userId}/{filename}"
+  format       ResumeFormat
+  fileSizeKb   Int           // Stored in KB — enforces upload limits at app layer
+  isDefault    Boolean       @default(false)  // The "active" resume for new applications
+
+  // ── AI Enrichment (populated by Module 4) ─
+  parsedText   String?       @db.Text   // Raw text extracted from PDF/DOCX
+  parsedSkills String[]                 // Skills array extracted by LLM
+
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  // Relations
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  applications Application[]
+
+  @@index([userId])
+  @@map("resumes")
+}
