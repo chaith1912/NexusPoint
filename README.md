@@ -1,5 +1,5 @@
 
-The README should cover the following:
+The README covers the following:
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PROJECT OVERVIEW
