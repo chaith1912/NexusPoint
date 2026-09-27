@@ -1,5 +1,3 @@
-Create a professional README.md file for my project at:
-C:\Users\Chaithanya R Rao\Desktop\nexuspoint-api
 
 The README should cover the following:
 
